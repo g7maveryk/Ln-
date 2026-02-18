@@ -73,7 +73,6 @@ local petCacheValid = false
 local nestsCache = nil
 local lastNestCacheUpdate = 0
 local loopThreads = {}
-local bossNextAttack = {}
 local startDebounce = false
 
 local floodCounter = 0
@@ -128,17 +127,19 @@ for i, enemy in ipairs(enemyList) do
     enemyEnabled[i] = false
 end
 
--- Food zones
+-- Food zones with individual toggles
 local foodZones = {
-    Crystal = "Zone12.1",
-    Draco = "Zone12",
+    { name = "Crystal Food (Zone12.1)", zone = "Zone12.1", enabled = false },
+    { name = "Draco Food (Zone12)", zone = "Zone12", enabled = false },
 }
 
 local config = {
     farmBosses = false,
-    bossAttackSpeed = 0.03,
-    farmFood = false,
+    bossSpeed = 0.03,
+    bossThreads = 3,
     foodSpeed = 0.01,
+    foodThreads = 5,
+    enemyThreads = 5,
     autoPlant = false,
     autoHatch = false,
     autoNests = false,
@@ -148,8 +149,6 @@ local config = {
     sacrificeLoopWalrus = false,
     doubleJump = false,
     wallspeed = 16,
-    enemyThreads = 5,
-    foodThreads = 5,
 }
 
 local bossList = {
@@ -246,20 +245,10 @@ local function getNests()
     return nestsCache
 end
 
-local function canAttackBoss(bossName)
-    local now = os.clock()
-    if now >= (bossNextAttack[bossName] or 0) then
-        bossNextAttack[bossName] = now + config.bossAttackSpeed
-        return true
-    end
-    return false
-end
-
 -- Attack enemy with multiple pets
 local function attackWithMultiplePets(enemy)
     local pets = getPets()
     if #pets == 0 then return end
-    -- Use up to 5 pets to attack the same enemy
     for i = 1, math.min(5, #pets) do
         safeCombat("AttackEnemy", enemy, pets[i])
     end
@@ -295,6 +284,26 @@ local function attackAllEnemies(zoneName, needsRequest)
     end
 end
 
+-- Boss threads (continuous)
+local bossThreads = {}
+local function bossWorker(threadId)
+    while active and bossThreads[threadId] and config.farmBosses do
+        if #activeBosses > 0 then
+            local pets = getPets()
+            if #pets > 0 then
+                local idx = 1
+                for _, boss in ipairs(activeBosses) do
+                    if boss and boss.Parent then
+                        safeCombat("AttackEnemy", boss, pets[idx])
+                        idx = idx % #pets + 1
+                    end
+                end
+            end
+        end
+        task.wait(config.bossSpeed)
+    end
+end
+
 -- Enemy farming threads
 local enemyThreads = {}
 local function enemyWorker(threadId)
@@ -308,7 +317,7 @@ local function enemyWorker(threadId)
                 end
             end
         end
-        task.wait(config.foodSpeed) -- Same speed as food for continuous farming
+        task.wait(config.foodSpeed)
     end
 end
 
@@ -316,27 +325,16 @@ end
 local foodThreads = {}
 local function foodWorker(threadId)
     while active and foodThreads[threadId] do
-        if config.farmFood then
-            -- Crystal Food
-            local crystalZone = getZone("Zone12.1")
-            if crystalZone and crystalZone:FindFirstChild("FoodSpawns") then
-                local foods = crystalZone.FoodSpawns:GetChildren()
-                for _, f in ipairs(foods) do
-                    local pets = getPets()
-                    for i = 1, math.min(5, #pets) do
-                        safeCollect("CollectFood", f, pets[i])
-                    end
-                end
-            end
-            
-            -- Draco Food
-            local dracoZone = getZone("Zone12")
-            if dracoZone and dracoZone:FindFirstChild("FoodSpawns") then
-                local foods = dracoZone.FoodSpawns:GetChildren()
-                for _, f in ipairs(foods) do
-                    local pets = getPets()
-                    for i = 1, math.min(5, #pets) do
-                        safeCollect("CollectFood", f, pets[i])
+        for _, foodZone in ipairs(foodZones) do
+            if foodZone.enabled then
+                local zone = getZone(foodZone.zone)
+                if zone and zone:FindFirstChild("FoodSpawns") then
+                    local foods = zone.FoodSpawns:GetChildren()
+                    for _, f in ipairs(foods) do
+                        local pets = getPets()
+                        for i = 1, math.min(5, #pets) do
+                            safeCollect("CollectFood", f, pets[i])
+                        end
                     end
                 end
             end
@@ -345,21 +343,7 @@ local function foodWorker(threadId)
     end
 end
 
--- Boss functions
-local function tickBosses()
-    if not config.farmBosses then return end
-    updateActivity()
-    local pets = getPets()
-    if #pets == 0 or #activeBosses == 0 then return end
-    local idx = 1
-    for _, boss in ipairs(activeBosses) do
-        if boss and boss.Parent and canAttackBoss(boss.Name) then
-            safeCombat("AttackEnemy", boss, pets[idx])
-            idx = idx % #pets + 1
-        end
-    end
-end
-
+-- Boss scan (updates active bosses list)
 local function scanBosses()
     if not config.farmBosses then return end
     local newActive = {}
@@ -427,6 +411,7 @@ local function saveCheckpoint()
         eggsSelected = {},
         bossEnabled = {},
         enemyEnabled = {},
+        foodZones = {},
         config = {}
     }
     for _, v in ipairs(eggsSelected) do
@@ -438,13 +423,16 @@ local function saveCheckpoint()
     for k, v in pairs(enemyEnabled) do
         checkpointData.enemyEnabled[k] = v
     end
+    for k, v in pairs(foodZones) do
+        checkpointData.foodZones[k] = { name = v.name, zone = v.zone, enabled = v.enabled }
+    end
     for k, v in pairs(config) do
         checkpointData.config[k] = v
     end
 end
 
 local lastAction = {
-    bosses = 0, sacrifice = 0, plant = 0, hatch = 0, nests = 0, bossScan = 0
+    sacrifice = 0, plant = 0, hatch = 0, nests = 0, bossScan = 0
 }
 
 local function canDoAction(action, cooldown)
@@ -457,9 +445,9 @@ local function canDoAction(action, cooldown)
 end
 
 local crashDetected = false
-local mainThreadHandle = nil
 local scanThreadHandle = nil
 
+-- Main loop now only handles non-threaded tasks
 local function mainLoop()
     while active do
         cycleCount = cycleCount + 1
@@ -471,11 +459,11 @@ local function mainLoop()
         
         if performance.fps < 30 and performance.mode == "normal" then
             performance.mode = "eco"
-            config.bossAttackSpeed = 0.1
+            config.bossSpeed = 0.1
             config.foodSpeed = 0.05
         elseif performance.fps > 45 and performance.mode == "eco" then
             performance.mode = "normal"
-            config.bossAttackSpeed = 0.03
+            config.bossSpeed = 0.03
             config.foodSpeed = 0.01
         end
         
@@ -496,15 +484,7 @@ local function mainLoop()
             lastActivity = os.clock()
         end
         
-        -- Bosses always first
-        if config.farmBosses then
-            tickBosses()
-        end
-        
-        -- Sacrifice
         tickSacrifice()
-        
-        -- Eggs
         tickPlant()
         tickHatch()
         tickNests()
@@ -531,16 +511,15 @@ local function watchdog()
     while true do
         task.wait(10)
         if active then
-            if not mainThreadHandle or not task.isrunning(mainThreadHandle) then
-                if mainThreadHandle then task.cancel(mainThreadHandle) end
-                mainThreadHandle = task.spawn(mainLoop)
-            end
-            if not scanThreadHandle or not task.isrunning(scanThreadHandle) then
-                if scanThreadHandle then task.cancel(scanThreadHandle) end
-                scanThreadHandle = task.spawn(bossScanLoop)
+            -- Restart boss threads
+            for i = 1, config.bossThreads do
+                if not bossThreads[i] then
+                    bossThreads[i] = true
+                    task.spawn(function() bossWorker(i) end)
+                end
             end
             
-            -- Restart enemy threads if needed
+            -- Restart enemy threads
             for i = 1, config.enemyThreads do
                 if not enemyThreads[i] then
                     enemyThreads[i] = true
@@ -548,12 +527,18 @@ local function watchdog()
                 end
             end
             
-            -- Restart food threads if needed
+            -- Restart food threads
             for i = 1, config.foodThreads do
                 if not foodThreads[i] then
                     foodThreads[i] = true
                     task.spawn(function() foodWorker(i) end)
                 end
+            end
+            
+            -- Restart scan thread if needed
+            if not scanThreadHandle or not task.isrunning(scanThreadHandle) then
+                if scanThreadHandle then task.cancel(scanThreadHandle) end
+                scanThreadHandle = task.spawn(bossScanLoop)
             end
         end
     end
@@ -604,8 +589,14 @@ local function start()
     petCacheValid = false
     lastActivity = os.clock()
     
-    mainThreadHandle = task.spawn(mainLoop)
+    task.spawn(mainLoop)
     scanThreadHandle = task.spawn(bossScanLoop)
+    
+    -- Start boss threads
+    for i = 1, config.bossThreads do
+        bossThreads[i] = true
+        task.spawn(function() bossWorker(i) end)
+    end
     
     -- Start enemy threads
     for i = 1, config.enemyThreads do
@@ -622,9 +613,9 @@ end
 
 local function stop()
     active = false
+    bossThreads = {}
     enemyThreads = {}
     foodThreads = {}
-    if mainThreadHandle then task.cancel(mainThreadHandle) mainThreadHandle = nil end
     if scanThreadHandle then task.cancel(scanThreadHandle) scanThreadHandle = nil end
     activeBosses = {}
     petCacheValid = false
@@ -668,7 +659,12 @@ task.spawn(function()
             end
             enemyStatus:Set("Enemies: " .. (anyEnemy and "ON" or "OFF"))
             
-            foodStatus:Set("Food: " .. (config.farmFood and "ON" or "OFF"))
+            local anyFood = false
+            for _, foodZone in ipairs(foodZones) do
+                if foodZone.enabled then anyFood = true break end
+            end
+            foodStatus:Set("Food: " .. (anyFood and "ON" or "OFF"))
+            
             eggStatus:Set("Eggs: " .. ((config.autoPlant or config.autoHatch) and "ON" or "OFF"))
             nestStatus:Set("Nests: " .. (config.autoNests and "ON" or "OFF"))
             
@@ -698,7 +694,7 @@ mainTab:CreateLabel("the best script for Pet Swarm Simulator")
 mainTab:CreateLabel("yt: Maveryk1t")
 mainTab:CreateLabel("discord: knzd1")
 
--- Enemies Tab (all in one)
+-- Enemies Tab
 local enemiesTab = win:CreateTab("Enemies")
 enemiesTab:CreateSection("Enemy Farming")
 enemiesTab:CreateToggle({ Name = "Enable All Enemies", CurrentValue = false, Callback = function(v)
@@ -731,10 +727,28 @@ enemiesTab:CreateLabel("5 pets per enemy attack")
 
 -- Food Tab
 local foodTab = win:CreateTab("Food")
-foodTab:CreateSection("Food Farming")
-foodTab:CreateToggle({ Name = "Enable Food Farming", CurrentValue = config.farmFood, Callback = function(v) config.farmFood = v; saveCheckpoint() end })
-foodTab:CreateLabel("• Crystal Food (Zone12.1)")
-foodTab:CreateLabel("• Draco Food (Zone12)")
+foodTab:CreateSection("Food Zones")
+foodTab:CreateLabel("Select which zones to farm:")
+
+foodTab:CreateToggle({ 
+    Name = foodZones[1].name, 
+    CurrentValue = foodZones[1].enabled, 
+    Callback = function(v) 
+        foodZones[1].enabled = v 
+        saveCheckpoint()
+    end 
+})
+
+foodTab:CreateToggle({ 
+    Name = foodZones[2].name, 
+    CurrentValue = foodZones[2].enabled, 
+    Callback = function(v) 
+        foodZones[2].enabled = v 
+        saveCheckpoint()
+    end 
+})
+
+foodTab:CreateSection("Settings")
 foodTab:CreateLabel("• 5 pets per food item")
 foodTab:CreateSlider({ Name = "Food Threads", Range = {1, 10}, Increment = 1, CurrentValue = config.foodThreads, Callback = function(v) config.foodThreads = v; saveCheckpoint() end })
 foodTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.foodSpeed, Callback = function(v) config.foodSpeed = v; saveCheckpoint() end })
@@ -747,9 +761,10 @@ bossTab:CreateToggle({ Name = "Enable All Bosses", CurrentValue = true, Callback
     for _, name in ipairs(bossList) do bossEnabled[name] = v end
     saveCheckpoint()
 end })
-bossTab:CreateSlider({ Name = "Attack Speed (s)", Range = {0.01, 0.3}, Increment = 0.01, Suffix = "s", CurrentValue = config.bossAttackSpeed, Callback = function(v) config.bossAttackSpeed = v; saveCheckpoint() end })
+bossTab:CreateSlider({ Name = "Boss Threads", Range = {1, 5}, Increment = 1, CurrentValue = config.bossThreads, Callback = function(v) config.bossThreads = v; saveCheckpoint() end })
+bossTab:CreateSlider({ Name = "Attack Speed (s)", Range = {0.01, 0.3}, Increment = 0.01, Suffix = "s", CurrentValue = config.bossSpeed, Callback = function(v) config.bossSpeed = v; saveCheckpoint() end })
 bossTab:CreateLabel("Boss scan every 15 seconds")
-bossTab:CreateLabel("Bosses always have highest priority")
+bossTab:CreateLabel("Continuous farming like food")
 
 bossTab:CreateSection("Boss List")
 for _, name in ipairs(bossList) do
@@ -763,7 +778,7 @@ end
 -- Eggs Tab
 local eggTab = win:CreateTab("Eggs")
 eggTab:CreateSection("Eggs Farm")
-eggTab:CreateLabel("Fixed configuration for maximum speed:")
+eggTab:CreateLabel("Fixed configuration:")
 
 eggTab:CreateSection("PLANT")
 eggTab:CreateToggle({ Name = "Enable Auto Plant", CurrentValue = config.autoPlant, Callback = function(v) config.autoPlant = v; saveCheckpoint() end })
@@ -867,22 +882,4 @@ UserInputService.InputBegan:Connect(function(input, gp)
     if not gp and input.KeyCode == Enum.KeyCode.H then
         guiVisible = not guiVisible
         for _, v in pairs(win:GetChildren()) do
-            if v:IsA("ScreenGui") then
-                v.Enabled = guiVisible
-            end
-        end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(60)
-        collectgarbage("collect")
-    end
-end)
-
-game:GetService("StarterGui"):SetCore("SendNotification", {
-    Title = "Maveryk Hub",
-    Text = "Script loaded successfully!",
-    Duration = 3
-})
+            if v:IsA
