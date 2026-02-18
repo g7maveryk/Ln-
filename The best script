@@ -882,4 +882,22 @@ UserInputService.InputBegan:Connect(function(input, gp)
     if not gp and input.KeyCode == Enum.KeyCode.H then
         guiVisible = not guiVisible
         for _, v in pairs(win:GetChildren()) do
-            if v:IsA
+            if v:IsA("ScreenGui") then
+                v.Enabled = guiVisible
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(60)
+        collectgarbage("collect")
+    end
+end)
+
+game:GetService("StarterGui"):SetCore("SendNotification", {
+    Title = "Maveryk Hub",
+    Text = "Script loaded successfully!",
+    Duration = 3
+})
