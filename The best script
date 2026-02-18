@@ -17,6 +17,7 @@ local HatchRemote = Events and Events:FindFirstChild("HatchEggEvent")
 local PlantRemote = Events and Events:FindFirstChild("PlantEggEvent")
 local FeedRemote = Events and Events:FindFirstChild("FeedEggEvent")
 local SacrificeRemote = Functions and Functions:FindFirstChild("SacrificeFunction")
+local ZonesRF = Functions and Functions:FindFirstChild("ZonesRF")
 
 local function safeCombat(...)
     if CombatRemote then
@@ -54,6 +55,12 @@ local function safeSacrifice(pet)
     end
 end
 
+local function requestZoneMap(zone)
+    if ZonesRF then
+        pcall(ZonesRF.InvokeServer, ZonesRF, "RequestZoneMap", zone)
+    end
+end
+
 local active = false
 local eggsSelected = {}
 local bossEnabled = {}
@@ -87,6 +94,7 @@ local function updateActivity()
     lastActivity = os.clock()
 end
 
+-- Boss zone mapping
 local bossZoneMap = {
     Naga = "Zone2B1",
     ["Lava Monster"] = "Zone5B1",
@@ -99,22 +107,70 @@ local bossZoneMap = {
     ["Great Sphinx"] = "ElementEventZoneB1",
 }
 
+-- New enemy zones mapping
+local enemyZones = {
+    Events = {
+        { name = "Summer", zone = "SummerEventZone", enemyType = "all" },
+        { name = "Winter", zone = "WinterEventZone", enemyType = "all" },
+        { name = "Sphinx", zone = "ElementEventZone1", enemy = "Evil Eagle", needsRequest = true },
+    },
+    Desert = {
+        { name = "Cursed Mummy", zone = "Zone2", enemy = "Cursed Mummy", needsRequest = true },
+    },
+    Sky = {
+        { name = "Crazy Unicorn", zone = "Zone5", enemy = "Crazy Unicorn", needsRequest = true },
+    },
+    Tiki = {
+        { name = "Terror Tree", zone = "Zone10", enemy = "Terror Tree", needsRequest = true },
+    },
+    Draco = {
+        { name = "Draco's Guard", zone = "Zone12", enemy = "Draco's Guard", needsRequest = true },
+    }
+}
+
+-- Food zones
+local foodZones = {
+    Crystal = "Zone12.1",
+    Draco = "Zone12",
+}
+
 local config = {
-    farmAllEnemies = false,
-    farmEnemiesSpeed = 0.05,
+    -- Event enemies
+    farmEvents = false,
     farmSummer = false,
     farmWinter = false,
-    farmFood = false,
+    farmSphinx = false,
+    -- Desert enemies
+    farmDesert = false,
+    farmCursedMummy = false,
+    -- Sky enemies
+    farmSky = false,
+    farmCrazyUnicorn = false,
+    -- Tiki enemies
+    farmTiki = false,
+    farmTerrorTree = false,
+    -- Draco enemies
+    farmDraco = false,
+    farmDracoGuard = false,
+    -- Food
+    farmCrystalFood = false,
+    farmDracoFood = false,
+    -- General speeds
+    enemiesSpeed = 0.05,
     foodSpeed = 0.03,
+    -- Bosses
     farmBosses = false,
     bossAttackSpeed = 0.03,
+    -- Eggs
     autoPlant = false,
     autoHatch = false,
     autoNests = false,
+    -- Sacrifice
     sacrificeLoopQueen = false,
     sacrificeLoopKing = false,
     sacrificeLoopFrozen = false,
     sacrificeLoopWalrus = false,
+    -- Misc
     doubleJump = false,
     wallspeed = 16,
 }
@@ -126,11 +182,13 @@ local bossList = {
 }
 for _, name in ipairs(bossList) do bossEnabled[name] = true end
 
+-- Update zone list with all new zones
 local zoneList = {
     "SummerEvent1", "WinterEvent1", "EleEgg1", "6", "4", "15", "10", "27",
     "30", "11", "34", "12.1", "1", "3", "7", "8", "9", "12", "13", "14",
     "Boss1", "Boss2", "Boss4",
-    "SummerEventZone", "WinterEventZone", "Zone12.1",
+    "SummerEventZone", "WinterEventZone", "Zone12.1", "ElementEventZone1",
+    "Zone2", "Zone5", "Zone10", "Zone12",
     "Zone2B1", "Zone5B1", "Zone10B1", "Zone12B1", "Zone12B3", "Zone12B2",
     "SummerEventZoneB1", "WinterEventZoneB1", "ElementEventZoneB1"
 }
@@ -221,37 +279,40 @@ local function canAttackBoss(bossName)
     return false
 end
 
-local function tickEnemies()
-    if not (config.farmAllEnemies or config.farmSummer or config.farmWinter) then return end
-    updateActivity()
-    local pets = getPets()
-    if #pets == 0 then return end
-    local idx = 1
-    if config.farmAllEnemies then
-        for _, zone in ipairs({"SummerEventZone", "WinterEventZone"}) do
-            local z = getZone(zone)
-            if z and z:FindFirstChild("Enemies") then
-                for _, e in ipairs(z.Enemies:GetChildren()) do
-                    safeCombat("AttackEnemy", e, pets[idx])
-                    idx = idx % #pets + 1
+-- Helper to attack a specific enemy in a zone
+local function attackEnemy(zoneName, enemyName, needsRequest)
+    if needsRequest then
+        requestZoneMap(zoneName)
+    end
+    local zone = getZone(zoneName)
+    if zone and zone:FindFirstChild("Enemies") then
+        local enemy = zone.Enemies:FindFirstChild(enemyName)
+        if enemy then
+            local pets = getPets()
+            if #pets > 0 then
+                -- Distribute attacks among pets
+                for i, pet in ipairs(pets) do
+                    safeCombat("AttackEnemy", enemy, pet)
                 end
             end
         end
-    else
-        if config.farmSummer then
-            local z = getZone("SummerEventZone")
-            if z and z:FindFirstChild("Enemies") then
-                for _, e in ipairs(z.Enemies:GetChildren()) do
-                    safeCombat("AttackEnemy", e, pets[idx])
-                    idx = idx % #pets + 1
-                end
-            end
-        end
-        if config.farmWinter then
-            local z = getZone("WinterEventZone")
-            if z and z:FindFirstChild("Enemies") then
-                for _, e in ipairs(z.Enemies:GetChildren()) do
-                    safeCombat("AttackEnemy", e, pets[idx])
+    end
+end
+
+-- Attack all enemies in a zone
+local function attackAllEnemies(zoneName, needsRequest)
+    if needsRequest then
+        requestZoneMap(zoneName)
+    end
+    local zone = getZone(zoneName)
+    if zone and zone:FindFirstChild("Enemies") then
+        local enemies = zone.Enemies:GetChildren()
+        if #enemies > 0 then
+            local pets = getPets()
+            if #pets > 0 then
+                local idx = 1
+                for _, enemy in ipairs(enemies) do
+                    safeCombat("AttackEnemy", enemy, pets[idx])
                     idx = idx % #pets + 1
                 end
             end
@@ -259,8 +320,56 @@ local function tickEnemies()
     end
 end
 
-local function tickFood()
-    if not config.farmFood then return end
+-- Enemy tick functions
+local function tickEvents()
+    if not config.farmEvents then return end
+    updateActivity()
+    if config.farmSummer then
+        attackAllEnemies("SummerEventZone", false)
+    end
+    if config.farmWinter then
+        attackAllEnemies("WinterEventZone", false)
+    end
+    if config.farmSphinx then
+        attackEnemy("ElementEventZone1", "Evil Eagle", true)
+    end
+end
+
+local function tickDesert()
+    if not config.farmDesert then return end
+    updateActivity()
+    if config.farmCursedMummy then
+        attackEnemy("Zone2", "Cursed Mummy", true)
+    end
+end
+
+local function tickSky()
+    if not config.farmSky then return end
+    updateActivity()
+    if config.farmCrazyUnicorn then
+        attackEnemy("Zone5", "Crazy Unicorn", true)
+    end
+end
+
+local function tickTiki()
+    if not config.farmTiki then return end
+    updateActivity()
+    if config.farmTerrorTree then
+        attackEnemy("Zone10", "Terror Tree", true)
+    end
+end
+
+local function tickDraco()
+    if not config.farmDraco then return end
+    updateActivity()
+    if config.farmDracoGuard then
+        attackEnemy("Zone12", "Draco's Guard", true)
+    end
+end
+
+-- Food ticks
+local function tickCrystalFood()
+    if not config.farmCrystalFood then return end
     updateActivity()
     local pets = getPets()
     if #pets == 0 then return end
@@ -273,6 +382,39 @@ local function tickFood()
                 safeCollect("CollectFood", f, pets[idx])
                 idx = idx % #pets + 1
             end
+        end
+    end
+end
+
+local function tickDracoFood()
+    if not config.farmDracoFood then return end
+    updateActivity()
+    local pets = getPets()
+    if #pets == 0 then return end
+    local zone = getZone("Zone12")
+    if zone and zone:FindFirstChild("FoodSpawns") then
+        local foods = zone.FoodSpawns:GetChildren()
+        if #foods > 0 then
+            local idx = 1
+            for _, f in ipairs(foods) do
+                safeCollect("CollectFood", f, pets[idx])
+                idx = idx % #pets + 1
+            end
+        end
+    end
+end
+
+-- Boss functions
+local function tickBosses()
+    if not config.farmBosses then return end
+    updateActivity()
+    local pets = getPets()
+    if #pets == 0 or #activeBosses == 0 then return end
+    local idx = 1
+    for _, boss in ipairs(activeBosses) do
+        if boss and boss.Parent and canAttackBoss(boss.Name) then
+            safeCombat("AttackEnemy", boss, pets[idx])
+            idx = idx % #pets + 1
         end
     end
 end
@@ -292,20 +434,7 @@ local function scanBosses()
     activeBosses = newActive
 end
 
-local function tickBosses()
-    if not config.farmBosses then return end
-    updateActivity()
-    local pets = getPets()
-    if #pets == 0 or #activeBosses == 0 then return end
-    local idx = 1
-    for _, boss in ipairs(activeBosses) do
-        if boss and boss.Parent and canAttackBoss(boss.Name) then
-            safeCombat("AttackEnemy", boss, pets[idx])
-            idx = idx % #pets + 1
-        end
-    end
-end
-
+-- Sacrifice
 local function tickSacrifice()
     if not (config.sacrificeLoopQueen or config.sacrificeLoopKing or 
             config.sacrificeLoopFrozen or config.sacrificeLoopWalrus) then return end
@@ -324,6 +453,7 @@ local function tickSacrifice()
     end
 end
 
+-- Eggs
 local function tickPlant()
     if not config.autoPlant or #eggsSelected == 0 then return end
     updateActivity()
@@ -370,7 +500,8 @@ end
 
 local lastAction = {
     plant = 0, hatch = 0, nests = 0, bosses = 0,
-    enemies = 0, food = 0, sacrifice = 0, bossScan = 0
+    events = 0, desert = 0, sky = 0, tiki = 0, draco = 0,
+    crystalFood = 0, dracoFood = 0, sacrifice = 0, bossScan = 0
 }
 
 local function canDoAction(action, cooldown)
@@ -382,17 +513,25 @@ local function canDoAction(action, cooldown)
     return false
 end
 
-local priorityQueue = {
-    { name = "bosses", func = tickBosses, weight = 10, lastRun = 0 },
-    { name = "enemies", func = tickEnemies, weight = 7, lastRun = 0 },
-    { name = "food", func = tickFood, weight = 5, lastRun = 0 },
-    { name = "sacrifice", func = tickSacrifice, weight = 3, lastRun = 0 },
-    { name = "plant", func = tickPlant, weight = 2, lastRun = 0 },
-    { name = "hatch", func = tickHatch, weight = 2, lastRun = 0 },
-    { name = "nests", func = tickNests, weight = 2, lastRun = 0 },
+-- Task order: Bosses > Events > Desert > Sky > Tiki > Draco > Food > Sacrifice > Eggs
+local taskOrder = {
+    { name = "bosses", func = tickBosses },
+    { name = "events", func = tickEvents },
+    { name = "desert", func = tickDesert },
+    { name = "sky", func = tickSky },
+    { name = "tiki", func = tickTiki },
+    { name = "draco", func = tickDraco },
+    { name = "crystalFood", func = tickCrystalFood },
+    { name = "dracoFood", func = tickDracoFood },
+    { name = "sacrifice", func = tickSacrifice },
+    { name = "plant", func = tickPlant },
+    { name = "hatch", func = tickHatch },
+    { name = "nests", func = tickNests },
 }
 
 local crashDetected = false
+local mainThreadHandle = nil
+local scanThreadHandle = nil
 
 local function mainLoop()
     while active do
@@ -406,12 +545,12 @@ local function mainLoop()
         if performance.fps < 30 and performance.mode == "normal" then
             performance.mode = "eco"
             config.bossAttackSpeed = 0.1
-            config.farmEnemiesSpeed = 0.1
+            config.enemiesSpeed = 0.1
             config.foodSpeed = 0.1
         elseif performance.fps > 45 and performance.mode == "eco" then
             performance.mode = "normal"
             config.bossAttackSpeed = 0.03
-            config.farmEnemiesSpeed = 0.05
+            config.enemiesSpeed = 0.05
             config.foodSpeed = 0.03
         end
         
@@ -432,16 +571,12 @@ local function mainLoop()
             lastActivity = os.clock()
         end
         
-        table.sort(priorityQueue, function(a, b)
-            local aScore = a.weight / (now - a.lastRun + 0.1)
-            local bScore = b.weight / (now - b.lastRun + 0.1)
-            return aScore > bScore
-        end)
-        
-        for _, task in ipairs(priorityQueue) do
+        for _, task in ipairs(taskOrder) do
             if active and task.func then
-                task.func()
-                task.lastRun = now
+                local success, err = pcall(task.func)
+                if not success then
+                    warn("Error in task " .. task.name .. ": " .. tostring(err))
+                end
             end
         end
         
@@ -460,6 +595,25 @@ local function bossScanLoop()
             scanBosses()
         end
         task.wait(1)
+    end
+end
+
+-- Watchdog to ensure loops are running
+local function watchdog()
+    while true do
+        task.wait(10)
+        if active then
+            if not mainThreadHandle or not task.isrunning(mainThreadHandle) then
+                warn("Main loop died, restarting...")
+                if mainThreadHandle then task.cancel(mainThreadHandle) end
+                mainThreadHandle = task.spawn(mainLoop)
+            end
+            if not scanThreadHandle or not task.isrunning(scanThreadHandle) then
+                warn("Scan loop died, restarting...")
+                if scanThreadHandle then task.cancel(scanThreadHandle) end
+                scanThreadHandle = task.spawn(bossScanLoop)
+            end
+        end
     end
 end
 
@@ -497,6 +651,8 @@ local memoryWatchdog = task.spawn(function()
     end
 end)
 
+local watchdogThread = task.spawn(watchdog)
+
 local function startLoop(name, func)
     if loopThreads[name] then
         task.cancel(loopThreads[name])
@@ -516,6 +672,8 @@ local function stopAllLoops()
         task.cancel(loopThreads[name])
         loopThreads[name] = nil
     end
+    if mainThreadHandle then task.cancel(mainThreadHandle) mainThreadHandle = nil end
+    if scanThreadHandle then task.cancel(scanThreadHandle) scanThreadHandle = nil end
     activeBosses = {}
     petCacheValid = false
     GlobalConnections:clear()
@@ -530,8 +688,8 @@ local function start()
     petCacheValid = false
     lastActivity = os.clock()
     
-    startLoop("main", mainLoop)
-    startLoop("bossScan", bossScanLoop)
+    mainThreadHandle = task.spawn(mainLoop)
+    scanThreadHandle = task.spawn(bossScanLoop)
 end
 
 local function stop()
@@ -542,7 +700,7 @@ end
 local win = Rayfield:CreateWindow({
     Name = "Maveryk Hub - Pet Swarm Simulator",
     LoadingTitle = "Loading...",
-    LoadingSubtitle = "Versão Definitiva",
+    LoadingSubtitle = "Insane Farm",
     ConfigurationSaving = { Enabled = true, FolderName = "MaverykHub", FileName = "Config" },
     Theme = "Dark"
 })
@@ -555,7 +713,11 @@ mainTab:CreateButton({ Name = "Stop Farming", Callback = stop })
 mainTab:CreateSection("Status")
 local statusLabel = mainTab:CreateLabel("Status: Stopped")
 local bossStatus = mainTab:CreateLabel("Bosses: OFF")
-local enemyStatus = mainTab:CreateLabel("Event Enemies: OFF")
+local eventsStatus = mainTab:CreateLabel("Events: OFF")
+local desertStatus = mainTab:CreateLabel("Desert: OFF")
+local skyStatus = mainTab:CreateLabel("Sky: OFF")
+local tikiStatus = mainTab:CreateLabel("Tiki: OFF")
+local dracoStatus = mainTab:CreateLabel("Draco: OFF")
 local foodStatus = mainTab:CreateLabel("Food: OFF")
 local eggStatus = mainTab:CreateLabel("Eggs: OFF")
 local nestStatus = mainTab:CreateLabel("Nests: OFF")
@@ -569,9 +731,18 @@ task.spawn(function()
         if active then
             statusLabel:Set("Status: Active")
             bossStatus:Set("Bosses: " .. (config.farmBosses and "ON" or "OFF"))
-            local enemyOn = config.farmAllEnemies or config.farmSummer or config.farmWinter
-            enemyStatus:Set("Event Enemies: " .. (enemyOn and "ON" or "OFF"))
-            foodStatus:Set("Food: " .. (config.farmFood and "ON" or "OFF"))
+            local eventsOn = config.farmEvents or config.farmSummer or config.farmWinter or config.farmSphinx
+            eventsStatus:Set("Events: " .. (eventsOn and "ON" or "OFF"))
+            local desertOn = config.farmDesert or config.farmCursedMummy
+            desertStatus:Set("Desert: " .. (desertOn and "ON" or "OFF"))
+            local skyOn = config.farmSky or config.farmCrazyUnicorn
+            skyStatus:Set("Sky: " .. (skyOn and "ON" or "OFF"))
+            local tikiOn = config.farmTiki or config.farmTerrorTree
+            tikiStatus:Set("Tiki: " .. (tikiOn and "ON" or "OFF"))
+            local dracoOn = config.farmDraco or config.farmDracoGuard
+            dracoStatus:Set("Draco: " .. (dracoOn and "ON" or "OFF"))
+            local foodOn = config.farmCrystalFood or config.farmDracoFood
+            foodStatus:Set("Food: " .. (foodOn and "ON" or "OFF"))
             eggStatus:Set("Eggs: " .. ((config.autoPlant or config.autoHatch) and "ON" or "OFF"))
             nestStatus:Set("Nests: " .. (config.autoNests and "ON" or "OFF"))
             local sacOn = config.sacrificeLoopQueen or config.sacrificeLoopKing or config.sacrificeLoopFrozen or config.sacrificeLoopWalrus
@@ -582,7 +753,11 @@ task.spawn(function()
         else
             statusLabel:Set("Status: Stopped")
             bossStatus:Set("Bosses: OFF")
-            enemyStatus:Set("Event Enemies: OFF")
+            eventsStatus:Set("Events: OFF")
+            desertStatus:Set("Desert: OFF")
+            skyStatus:Set("Sky: OFF")
+            tikiStatus:Set("Tiki: OFF")
+            dracoStatus:Set("Draco: OFF")
             foodStatus:Set("Food: OFF")
             eggStatus:Set("Eggs: OFF")
             nestStatus:Set("Nests: OFF")
@@ -599,28 +774,73 @@ mainTab:CreateLabel("the best script for Pet Swarm Simulator")
 mainTab:CreateLabel("yt: Maveryk1t")
 mainTab:CreateLabel("discord: knzd1")
 
-local farmTab = win:CreateTab("Farming")
-farmTab:CreateSection("Event Enemies")
-farmTab:CreateToggle({
-    Name = "Enable All (Summer + Winter)",
-    CurrentValue = config.farmAllEnemies,
-    Callback = function(v)
-        config.farmAllEnemies = v
-        if v then
-            config.farmSummer = false
-            config.farmWinter = false
-        end
-        saveCheckpoint()
-    end
-})
-farmTab:CreateToggle({ Name = "Summer Only", CurrentValue = config.farmSummer, Callback = function(v) config.farmSummer = v; if v then config.farmAllEnemies = false end; saveCheckpoint() end })
-farmTab:CreateToggle({ Name = "Winter Only", CurrentValue = config.farmWinter, Callback = function(v) config.farmWinter = v; if v then config.farmAllEnemies = false end; saveCheckpoint() end })
-farmTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.farmEnemiesSpeed, Callback = function(v) config.farmEnemiesSpeed = v; saveCheckpoint() end })
+-- Events Tab
+local eventsTab = win:CreateTab("Events")
+eventsTab:CreateSection("Event Enemies")
+eventsTab:CreateToggle({ Name = "Enable All Events", CurrentValue = false, Callback = function(v)
+    config.farmEvents = v
+    config.farmSummer = v
+    config.farmWinter = v
+    config.farmSphinx = v
+    saveCheckpoint()
+end })
+eventsTab:CreateToggle({ Name = "Summer", CurrentValue = config.farmSummer, Callback = function(v) config.farmSummer = v; config.farmEvents = false; saveCheckpoint() end })
+eventsTab:CreateToggle({ Name = "Winter", CurrentValue = config.farmWinter, Callback = function(v) config.farmWinter = v; config.farmEvents = false; saveCheckpoint() end })
+eventsTab:CreateToggle({ Name = "Sphinx (Evil Eagle)", CurrentValue = config.farmSphinx, Callback = function(v) config.farmSphinx = v; config.farmEvents = false; saveCheckpoint() end })
+eventsTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.enemiesSpeed, Callback = function(v) config.enemiesSpeed = v; saveCheckpoint() end })
 
-farmTab:CreateSection("Food")
-farmTab:CreateToggle({ Name = "Farm Food", CurrentValue = config.farmFood, Callback = function(v) config.farmFood = v; saveCheckpoint() end })
-farmTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.foodSpeed, Callback = function(v) config.foodSpeed = v; saveCheckpoint() end })
+-- Desert Tab
+local desertTab = win:CreateTab("Desert")
+desertTab:CreateSection("Desert Enemies")
+desertTab:CreateToggle({ Name = "Enable All Desert", CurrentValue = false, Callback = function(v)
+    config.farmDesert = v
+    config.farmCursedMummy = v
+    saveCheckpoint()
+end })
+desertTab:CreateToggle({ Name = "Cursed Mummy", CurrentValue = config.farmCursedMummy, Callback = function(v) config.farmCursedMummy = v; config.farmDesert = false; saveCheckpoint() end })
+desertTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.enemiesSpeed, Callback = function(v) config.enemiesSpeed = v; saveCheckpoint() end })
 
+-- Sky Tab
+local skyTab = win:CreateTab("Sky")
+skyTab:CreateSection("Sky Enemies")
+skyTab:CreateToggle({ Name = "Enable All Sky", CurrentValue = false, Callback = function(v)
+    config.farmSky = v
+    config.farmCrazyUnicorn = v
+    saveCheckpoint()
+end })
+skyTab:CreateToggle({ Name = "Crazy Unicorn", CurrentValue = config.farmCrazyUnicorn, Callback = function(v) config.farmCrazyUnicorn = v; config.farmSky = false; saveCheckpoint() end })
+skyTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.enemiesSpeed, Callback = function(v) config.enemiesSpeed = v; saveCheckpoint() end })
+
+-- Tiki Tab
+local tikiTab = win:CreateTab("Tiki")
+tikiTab:CreateSection("Tiki Enemies")
+tikiTab:CreateToggle({ Name = "Enable All Tiki", CurrentValue = false, Callback = function(v)
+    config.farmTiki = v
+    config.farmTerrorTree = v
+    saveCheckpoint()
+end })
+tikiTab:CreateToggle({ Name = "Terror Tree", CurrentValue = config.farmTerrorTree, Callback = function(v) config.farmTerrorTree = v; config.farmTiki = false; saveCheckpoint() end })
+tikiTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.enemiesSpeed, Callback = function(v) config.enemiesSpeed = v; saveCheckpoint() end })
+
+-- Draco Tab
+local dracoTab = win:CreateTab("Draco")
+dracoTab:CreateSection("Draco Enemies")
+dracoTab:CreateToggle({ Name = "Enable All Draco", CurrentValue = false, Callback = function(v)
+    config.farmDraco = v
+    config.farmDracoGuard = v
+    saveCheckpoint()
+end })
+dracoTab:CreateToggle({ Name = "Draco's Guard", CurrentValue = config.farmDracoGuard, Callback = function(v) config.farmDracoGuard = v; config.farmDraco = false; saveCheckpoint() end })
+dracoTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.enemiesSpeed, Callback = function(v) config.enemiesSpeed = v; saveCheckpoint() end })
+
+-- Food Tab
+local foodTab = win:CreateTab("Food")
+foodTab:CreateSection("Food Farming")
+foodTab:CreateToggle({ Name = "Crystal Food (Zone12.1)", CurrentValue = config.farmCrystalFood, Callback = function(v) config.farmCrystalFood = v; saveCheckpoint() end })
+foodTab:CreateToggle({ Name = "Draco Food (Zone12)", CurrentValue = config.farmDracoFood, Callback = function(v) config.farmDracoFood = v; saveCheckpoint() end })
+foodTab:CreateSlider({ Name = "Speed (s)", Range = {0.001, 1}, Increment = 0.001, Suffix = "s", CurrentValue = config.foodSpeed, Callback = function(v) config.foodSpeed = v; saveCheckpoint() end })
+
+-- Bosses Tab
 local bossTab = win:CreateTab("Bosses")
 bossTab:CreateSection("Boss Control")
 bossTab:CreateToggle({ Name = "Enable Boss Farming", CurrentValue = config.farmBosses, Callback = function(v) config.farmBosses = v; saveCheckpoint() end })
@@ -640,6 +860,7 @@ for _, name in ipairs(bossList) do
     })
 end
 
+-- Eggs Tab
 local eggTab = win:CreateTab("Eggs")
 eggTab:CreateSection("Eggs Farm - Ultra Fast")
 eggTab:CreateLabel("Fixed configuration for maximum speed:")
@@ -688,6 +909,7 @@ eggTab:CreateButton({
     end
 })
 
+-- Sacrifices Tab
 local sacrificeTab = win:CreateTab("Sacrifices")
 sacrificeTab:CreateSection("Mythical")
 sacrificeTab:CreateToggle({ Name = "Queen Bee (Mythical) - Loop", CurrentValue = config.sacrificeLoopQueen, Callback = function(v) config.sacrificeLoopQueen = v; saveCheckpoint() end })
@@ -701,6 +923,7 @@ sacrificeTab:CreateButton({ Name = "Sacrifice King Bee (Once)", Callback = funct
 sacrificeTab:CreateToggle({ Name = "Walrus (Legendary) - Loop", CurrentValue = config.sacrificeLoopWalrus, Callback = function(v) config.sacrificeLoopWalrus = v; saveCheckpoint() end })
 sacrificeTab:CreateButton({ Name = "Sacrifice Walrus (Once)", Callback = function() safeSacrifice("Walrus") end })
 
+-- Misc Tab
 local miscTab = win:CreateTab("Misc")
 miscTab:CreateSection("Movement")
 
