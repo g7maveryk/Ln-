@@ -1,6 +1,6 @@
 --[[
     GK Hub - Versão Final
-    - Bosses: ciclo a cada 6s
+    - Bosses: ataca todos em ciclo, depois 6s de pausa
     - Enemies: contínuo (delay 0.1s)
     - Food: 0.5s
     - Eggs: 0.5s
@@ -227,21 +227,20 @@ local function safeCollectFood(food, pet)
     end
 end
 
--- Ataque a bosses
+-- Ataque a bosses (agora sequencial, sem spawn em massa)
 local function attackBosses()
     if #activeBosses == 0 then return end
     local pets = updatePets()
     if #pets == 0 then return end
     local delays = getDelays()
     
+    -- Ataca cada boss sequencialmente (um por vez)
     for _, boss in ipairs(activeBosses) do
         if boss and boss.Parent then
-            task.spawn(function()
-                safeAttackEnemy(boss, pets[1])
-                if delays.bossAttackDelay > 0 then
-                    task.wait(delays.bossAttackDelay)
-                end
-            end)
+            safeAttackEnemy(boss, pets[1])
+            if delays.bossAttackDelay > 0 then
+                task.wait(delays.bossAttackDelay)
+            end
         end
     end
 end
@@ -384,6 +383,17 @@ local function startTask(name, func, interval)
     end)
 end
 
+-- Thread específica para bosses (executa todos e depois espera)
+local function bossTask()
+    while active do
+        if config.farmBosses and #activeBosses > 0 then
+            attackBosses()
+        end
+        local delays = getDelays()
+        task.wait(delays.bossDelay)
+    end
+end
+
 -- Loop principal (apenas para manter o script vivo)
 local function farmLoop()
     while active do
@@ -409,12 +419,8 @@ local function start()
     -- Scan de bosses (a cada 15s)
     startTask("bossScan", scanBosses, 15)
 
-    -- Ataque a bosses (a cada 6s)
-    startTask("bossAttack", function()
-        if config.farmBosses and #activeBosses > 0 then
-            attackBosses()
-        end
-    end, delays.bossDelay)
+    -- Ataque a bosses (thread especial com ciclo completo)
+    task.spawn(bossTask)
 
     -- Enemies (contínuo)
     startTask("enemyAttack", function()
@@ -599,13 +605,13 @@ speedTab:CreateSlider({
 })
 
 speedTab:CreateSection("Low Mode Values:")
-speedTab:CreateLabel("• Bosses: 6.0s cycle, 0.9s attack")
+speedTab:CreateLabel("• Bosses: ataca TODOS, depois 6.0s de pausa")
 speedTab:CreateLabel("• Enemies: 0.1s cycle (CONTÍNUO)")
 speedTab:CreateLabel("• Food: 0.5s cycle")
 speedTab:CreateLabel("• Eggs: 0.5s cycle")
 
 speedTab:CreateSection("Fast Mode Values:")
-speedTab:CreateLabel("• Bosses: 6.0s cycle, 0.2s attack")
+speedTab:CreateLabel("• Bosses: ataca TODOS, depois 6.0s de pausa")
 speedTab:CreateLabel("• Enemies: 0.05s cycle")
 speedTab:CreateLabel("• Food: 1.2s cycle")
 speedTab:CreateLabel("• Eggs: 0.001s cycle")
@@ -701,6 +707,9 @@ sacrificeTab:CreateButton({ Name = "Orb - Once", Callback = function() sacrifice
 -- Misc Tab
 local miscTab = win:CreateTab("Misc")
 miscTab:CreateSection("Movement")
+local jumpConnection = nil
+local jumpCount = 0
+
 miscTab:CreateToggle({ Name = "Infinite Double Jump", CurrentValue = config.doubleJump, Callback = function(v)
     config.doubleJump = v
     if v then
