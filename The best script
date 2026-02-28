@@ -26,7 +26,7 @@ local FeedRemote = Events and Events:FindFirstChild("FeedEggEvent")
 local SacrificeRemote = Functions and Functions:FindFirstChild("SacrificeFunction")
 local ZonesRF = Functions and Functions:FindFirstChild("ZonesRF")
 
--- Cache de zonas
+-- Cache de zonas (para inimigos e comida)
 local zoneCache = {}
 local zoneList = {
     "SummerEvent1", "WinterEvent1", "EleEgg1", "6", "4", "15", "10", "27",
@@ -227,14 +227,13 @@ local function safeCollectFood(food, pet)
     end
 end
 
--- Ataque a bosses (agora sequencial, sem spawn em massa)
+-- Ataque a bosses (sequencial, um por vez)
 local function attackBosses()
     if #activeBosses == 0 then return end
     local pets = updatePets()
     if #pets == 0 then return end
     local delays = getDelays()
     
-    -- Ataca cada boss sequencialmente (um por vez)
     for _, boss in ipairs(activeBosses) do
         if boss and boss.Parent then
             safeAttackEnemy(boss, pets[1])
@@ -245,7 +244,7 @@ local function attackBosses()
     end
 end
 
--- Ataque a inimigos
+-- Ataque a inimigos (paralelo)
 local function attackEnemiesInZone(zoneName)
     local zone = zoneCache[zoneName]
     if not zone then return end
@@ -326,7 +325,7 @@ local function doNests()
     end
 end
 
--- Scan de bosses
+-- SCAN DE BOSSES CORRIGIDO (usa Workspace diretamente, sem cache)
 local function scanBosses()
     if not config.farmBosses then
         activeBosses = {}
@@ -335,7 +334,7 @@ local function scanBosses()
     local newActive = {}
     for _, name in ipairs(bossList) do
         if bossEnabled[name] then
-            local zone = zoneCache[bossZoneMap[name]]
+            local zone = Workspace.Zones:FindFirstChild(bossZoneMap[name])
             if zone then
                 local enemies = zone:FindFirstChild("Enemies")
                 if enemies then
